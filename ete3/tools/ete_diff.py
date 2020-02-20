@@ -80,6 +80,7 @@ def RF_DIST(a, b):
 
 
 def get_distances1(t1,t2):
+#     In this case the distance uses the path between the leaves and the node to compare
     def _get_leaves_paths(t):
         leaves = t.get_leaves()
         leave_branches = set()
@@ -107,6 +108,7 @@ def get_distances1(t1,t2):
 
 
 def get_distances2(t1,t2):
+#     For this case, distance is calculated from cophenetic matrix from not shared leaves under each node
     def cophenetic_compared_matrix(t_source,t_compare):
 
         leaves = t_source.get_leaves()
@@ -170,50 +172,73 @@ def sepstring(items, sep=", "):
 def treediff(t1, t2, attr1, attr2, dist_fn=EUCL_DIST, reduce_matrix=False,branchdist=None, jobs=1):
     log = logging.getLogger()
     log.info("Computing distance matrix...")
+    
+#     This two lines gets every node from the two trees and all the elements of the selected attribute under each node.
+#     Eg: for this tree:
+
+#        /-aaaaaaaaaa
+#     --|
+#        \-aaaaaaaaab
+
+#     it will look like this:
+#     {Tree node 'aaaaaaaaaa' (0x7f9bebff1c5): {'aaaaaaaaaa'}, Tree node 'aaaaaaaaab' (0x7f9bebff1cc): {'aaaaaaaaab'}, Tree node '' (0x7f9bebff1be): {'aaaaaaaaaa', 'aaaaaaaaab'}}
+#     and when extracting each element from the set doing a loop or something over it, the position 0 will be the node and 1 the set of attribute elements
+
     t1_cached_content = t1.get_cached_content(store_attr=attr1)
     t2_cached_content = t2.get_cached_content(store_attr=attr2)
-
+    
+    # This lines are the same that the two lines below but the difference is that this one doesn't take leaves, only internal nodes
 #     parts1 = [(k, v) for k, v in t1_cached_content.items() if k.children]
 #     parts2 = [(k, v) for k, v in t2_cached_content.items() if k.children]
 
     parts1 = [(k, v) for k, v in t1_cached_content.items()]
     parts2 = [(k, v) for k, v in t2_cached_content.items()]
 
+#     We have to sort it because if not we will not know to which node corresponds each row/column when removing the rows/columns at reduce matrix step
     parts1 = sorted(parts1, key = lambda x : len(x[1]))
     parts2 = sorted(parts2, key = lambda x : len(x[1]))
 
+#     Load the elements in different threads if more than one thread is provided, this will podruce a matrix that will be calculated on next lines
     pool = mp.Pool(jobs)
     matrix = [[pool.apply_async(dist_fn,args=((n1,x),(n2,y))) for n2,y in parts2] for n1,x in parts1]
     pool.close()
     
+#     I use with to allow tqdm to show a custom bar as long as all the elements in the matrix
     with tqdm(total=len(matrix[0])*len(matrix)) as pbar:
         for i in range(len(matrix)):
             for j in range(len(matrix[0])):
+#                 Calculate the distance value for each pair of elements in the matrix
                 matrix[i][j] = matrix[i][j].get()
                 pbar.update(1)
     
-    # Reduce matrix to avoid useless comparisons
+    # Reduce matrix to avoid useless comparisons (remove all columns and rows which have any 0 as they won't be used to build difftable)
     if reduce_matrix:
         log.info( "Reducing distance matrix...")
         cols_to_include = set(range(len(matrix[0])))
         rows_to_include = []
         for i, row in enumerate(matrix):
             try:
+#                 If there is a 0 in this row then remove the column where it is located from the list of columns to take and don't add the row to the list
                 cols_to_include.remove(row.index(0.0))
             except ValueError:
+#                 If there is no 0 in this row, add this row to the list
                 rows_to_include.append(i)
             except KeyError:
+#                 If the column is already removed from the array cols_to_include, try will throw KeyError exception
                 pass
         
         cols_to_include = sorted(cols_to_include)
 
+#         Get the selected parts from nodes corresponding to the elements left in the matrix
         parts1 = [parts1[row] for row in rows_to_include]
         parts2 = [parts2[col] for col in cols_to_include]
         
         new_matrix = []
         for row in rows_to_include:
+#             Get the  new smaller matrix
             new_matrix.append([matrix[row][col] for col in cols_to_include])
  
+        # If there is nothing to analyse then return the empty matrix
         if len(new_matrix) < 1:
             return new_matrix
         
@@ -224,8 +249,10 @@ def treediff(t1, t2, attr1, attr2, dist_fn=EUCL_DIST, reduce_matrix=False,branch
 
     log.info("Comparing trees...")
 
+#     To use this library we have to use a numpy array
     matrix = np.asarray(matrix, dtype=np.float32)
 
+#     Linear Assignment Problem solver based on Jonker-Volgenant algorithm. Gets for each column the row that yo have to take to find the minimum cost
     cols , _ = lapjv(matrix,extend_cost=True)
 
     difftable = []
@@ -233,6 +260,7 @@ def treediff(t1, t2, attr1, attr2, dist_fn=EUCL_DIST, reduce_matrix=False,branch
     for r in range(len(matrix)):
         c = cols[r]
         if matrix[r][c] != 0:
+            # if we whant to get also the difference of branchs distances solving the Linear Assignment Problem
             if branchdist:
                 b_dist = branchdist(parts1[r][0], parts2[c][0])
             else:
@@ -411,7 +439,7 @@ def populate_args(diff_args_p):
 def run(args):
     
     if (not args.ref_trees or not args.src_trees):
-        logging.warning("Target tree (-s) or reference tree (-r) weren't introduced. You can find the arguments in the help command (-h)")
+        logging.warning("Target tree (-t) or reference tree (-r) weren't introduced. You can find the arguments in the help command (-h)")
                
     else:
            
